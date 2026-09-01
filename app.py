@@ -963,33 +963,57 @@ def page_integrated_csv_analysis():
             induction_time = time_arr[min_idx]
             induction_times[temp] = induction_time
             
-            # 从诱导期结束点开始找峰谷
+            # 从诱导期结束点开始找峰谷（交替提取：谷→峰→谷→峰...）
+            # 诱导期结束点本身是第一个谷值
             valley_times = [induction_time]
             peak_times = []
             current_idx = min_idx + 1
             
-            n_valley = 0
-            n_peak = 0
-            max_points = 20
+            n_valley_needed = 6  # 总共需要6个谷值（包含诱导期结束点）
+            n_peak_needed = 6    # 总共需要6个峰值
             
-            while (n_valley < 6 or n_peak < 6) and current_idx < len(time_arr) and (n_valley + n_peak) < max_points:
-                if n_peak < 6:
+            # 交替提取
+            while len(peak_times) < n_peak_needed and len(valley_times) < n_valley_needed:
+                if current_idx >= len(time_arr):
+                    break
+                
+                # 找下一个峰值
+                if len(peak_times) < n_peak_needed:
                     idx, tp, pp = find_next_peak(time_arr, pot_arr, current_idx, delta)
                     if idx < len(time_arr):
                         peak_times.append(tp)
                         current_idx = idx + 1
-                        n_peak += 1
-                if n_valley < 6 and current_idx < len(time_arr):
+                    else:
+                        break
+                
+                # 找下一个谷值
+                if len(valley_times) < n_valley_needed and current_idx < len(time_arr):
                     idx, tv, pv = find_next_valley(time_arr, pot_arr, current_idx, delta)
                     if idx < len(time_arr):
                         valley_times.append(tv)
                         current_idx = idx + 1
-                        n_valley += 1
+                    else:
+                        break
             
-            # 计算周期
-            v_period, p_period, _, _ = calculate_periods(valley_times, peak_times)
-            valley_periods[temp] = v_period
-            peak_periods[temp] = p_period
+            # 计算振荡周期（使用相邻峰/谷之间的时间差）
+            # 谷值法：计算相邻谷值之间的时间间隔
+            valley_period_list = []
+            if len(valley_times) >= 2:
+                valley_period_list = [valley_times[i+1] - valley_times[i] 
+                                      for i in range(len(valley_times)-1)]
+            
+            # 峰值法：计算相邻峰值之间的时间间隔
+            peak_period_list = []
+            if len(peak_times) >= 2:
+                peak_period_list = [peak_times[i+1] - peak_times[i] 
+                                    for i in range(len(peak_times)-1)]
+            
+            # 取平均值
+            valley_period = np.mean(valley_period_list) if valley_period_list else np.nan
+            peak_period = np.mean(peak_period_list) if peak_period_list else np.nan
+            
+            valley_periods[temp] = valley_period
+            peak_periods[temp] = peak_period
         
         # 显示统计信息
         stats_data = []
@@ -1070,7 +1094,6 @@ def page_integrated_csv_analysis():
             mime="text/csv",
             use_container_width=True
         )
-
 # ============================================================
 # 路由
 # ============================================================
