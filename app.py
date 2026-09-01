@@ -46,7 +46,7 @@ st.markdown("选择左侧功能板块开始分析")
 st.sidebar.title("📋 功能导航")
 page = st.sidebar.radio(
     "选择分析工具",
-    ["📟 数码管数字识别", "⚡ B-Z振荡反应分析"],
+    ["📟 数码管数字识别", "⚡ B-Z振荡反应分析", "📊 整合CSV分析"],
     index=0
 )
 
@@ -174,7 +174,7 @@ def find_next_valley(time, potential, start_idx, delta):
     idx = min(i, n - 1)
     return idx, time[idx], potential[idx]
 
-def parse_temperature(filename):
+def parse_temperature_from_file(filename):
     """Parse temperature from filename."""
     base = os.path.splitext(os.path.basename(filename))[0]
     m = re.search(r"-?\d+(?:\.\d+)?", base)
@@ -182,13 +182,9 @@ def parse_temperature(filename):
         return float(m.group())
     return None
 
-def extract_one_file(file_content, filename, temp, pot_low, pot_high, n_valley, n_peak, delta):
-    """Extract B-Z data from a single CSV file."""
-    try:
-        df = pd.read_csv(io.StringIO(file_content.decode('utf-8')))
-    except:
-        df = pd.read_csv(io.BytesIO(file_content))
-    
+def extract_bz_from_dataframe(df, temp, pot_low, pot_high, n_valley, n_peak, delta):
+    """Extract B-Z data from a DataFrame with time and potential columns."""
+    # 获取时间和电势列
     time_raw = df.iloc[:, 0].values.astype(float)
     potential_raw = df.iloc[:, 1].values.astype(float)
 
@@ -257,7 +253,7 @@ def calculate_periods(valley_times, peak_times):
     
     return valley_period, peak_period, valley_periods, peak_periods
 
-def plot_time_series(data_dict):
+def plot_time_series_single(data_dict):
     """Plot potential-time curves for each temperature."""
     fig_dict = {}
     for temp, (time_arr, pot_arr) in data_dict.items():
@@ -737,10 +733,10 @@ def page_digital_tube():
 
 
 # ============================================================
-# 板块2：B-Z振荡反应分析
+# 板块2：B-Z振荡反应分析（上传单个CSV文件）
 # ============================================================
 def page_bz_analysis():
-    st.header("⚡ B-Z 振荡反应数据分析")
+    st.header("⚡ B-Z 振荡反应数据分析 (单文件)")
     st.markdown("上传包含B-Z振荡反应数据的CSV文件（每个文件以温度命名），系统将自动提取诱导期、振荡周期并生成拟合图。")
     
     with st.sidebar:
@@ -772,14 +768,19 @@ def page_bz_analysis():
             status_text.text(f"处理: {file.name} [{idx+1}/{len(uploaded_files)}]")
             progress_bar.progress((idx + 1) / len(uploaded_files))
             
-            temp = parse_temperature(file.name)
+            temp = parse_temperature_from_file(file.name)
             if temp is None:
                 st.warning(f"跳过 {file.name}: 无法解析温度")
                 continue
             
-            file_content = file.read()
-            result = extract_one_file(
-                file_content, file.name, temp,
+            try:
+                df = pd.read_csv(file)
+            except Exception as e:
+                st.warning(f"跳过 {file.name}: 无法读取CSV - {e}")
+                continue
+            
+            result = extract_bz_from_dataframe(
+                df, temp,
                 POTENTIAL_LOW, POTENTIAL_HIGH,
                 N_VALLEY, N_PEAK, DELTA
             )
@@ -830,7 +831,7 @@ def page_bz_analysis():
         
         with col1:
             st.subheader("📉 电势-时间曲线")
-            figs = plot_time_series(time_series_data)
+            figs = plot_time_series_single(time_series_data)
             for temp, fig in figs.items():
                 st.pyplot(fig)
         
@@ -878,9 +879,173 @@ def page_bz_analysis():
 
 
 # ============================================================
+# 板块3：整合CSV分析
+# ============================================================
+def page_integrated_csv_analysis():
+    st.header("📊 整合CSV分析")
+    st.markdown("""
+    上传已整合的CSV文件（如 `bz_extracted_all.csv`），系统将自动按温度分组进行B-Z振荡反应分析。
+    
+    **CSV格式要求：**
+    - 必须包含列：`T` (温度), `t` (时间), `E` (电动势)
+    - 按温度分组后，每个温度的数据将独立进行诱导期和振荡周期提取
+    """)
+    
+    with st.sidebar:
+        st.header("⚙️ B-Z分析参数")
+        POTENTIAL_LOW = st.number_input("电势下限 (mV)", value=100, min_value=0, max_value=500)
+        POTENTIAL_HIGH = st.number_input("电势上限 (mV)", value=1000, min_value=500, max_value=2000)
+        N_VALLEY = st.number_input("谷值数量", value=6, min_value=2, max_value=20)
+        N_PEAK = st.number_input("峰值数量", value=6, min_value=2, max_value=20)
+        DELTA = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
+    
+    uploaded_file = st.file_uploader(
+        "上传整合CSV文件",
+        type=['csv'],
+        help="上传包含 T, t, E 三列的CSV文件"
+    )
+
+    if uploaded_file is not None:
+        try:
+            df_full = pd.read_csv(uploaded_file)
+        except Exception as e:
+            st.error(f"❌ 无法读取CSV文件: {e}")
+            return
+        
+        # 检查必需的列
+        required_cols = ['T', 't', 'E']
+        missing_cols = [col for col in required_cols if col not in df_full.columns]
+        if missing_cols:
+            st.error(f"❌ CSV文件缺少必需的列: {missing_cols}")
+            st.info(f"当前列: {list(df_full.columns)}")
+            return
+        
+        st.success(f"✅ 成功读取CSV文件，共 {len(df_full)} 行数据")
+        
+        # 获取所有温度
+        temps = sorted(df_full['T'].unique())
+        st.info(f"📊 发现 {len(temps)} 个温度: {temps}")
+        
+        # 按温度分组处理
+        all_extracted_rows = []
+        induction_times = {}
+        valley_periods = {}
+        peak_periods = {}
+        time_series_data = {}
+        
+        progress_bar = st.progress(0, text="处理数据中...")
+        status_text = st.empty()
+        
+        for idx, temp in enumerate(temps):
+            status_text.text(f"处理温度: {temp} °C [{idx+1}/{len(temps)}]")
+            progress_bar.progress((idx + 1) / len(temps))
+            
+            # 提取该温度的数据
+            df_temp = df_full[df_full['T'] == temp][['t', 'E']].copy()
+            
+            result = extract_bz_from_dataframe(
+                df_temp, temp,
+                POTENTIAL_LOW, POTENTIAL_HIGH,
+                N_VALLEY, N_PEAK, DELTA
+            )
+            
+            if result[0] is None:
+                st.warning(f"温度 {temp} °C: 无有效数据，跳过")
+                continue
+            
+            temp_val, t_list, e_list, induction_time, valley_times, peak_times = result
+            
+            for tt, ee in zip(t_list, e_list):
+                all_extracted_rows.append({"T": temp_val, "t": tt, "E": ee})
+            
+            induction_times[temp_val] = induction_time
+            time_series_data[temp_val] = (t_list, e_list)
+            
+            v_period, p_period, _, _ = calculate_periods(valley_times, peak_times)
+            valley_periods[temp_val] = v_period
+            peak_periods[temp_val] = p_period
+        
+        status_text.text("✅ 处理完成！")
+        progress_bar.empty()
+        
+        if not all_extracted_rows:
+            st.error("未提取到任何有效数据")
+            return
+        
+        # ===== 显示结果 =====
+        st.subheader("📊 提取结果")
+        df_result = pd.DataFrame(all_extracted_rows)
+        st.dataframe(df_result, use_container_width=True)
+        
+        # ===== 统计信息 =====
+        st.subheader("📈 统计信息")
+        stats_data = []
+        for temp in sorted(induction_times.keys()):
+            stats_data.append({
+                'Temperature (°C)': temp,
+                'Induction Time (s)': induction_times[temp],
+                'Valley Period (s)': valley_periods.get(temp, np.nan),
+                'Peak Period (s)': peak_periods.get(temp, np.nan)
+            })
+        stats_df = pd.DataFrame(stats_data)
+        st.dataframe(stats_df, use_container_width=True)
+        
+        # ===== 绘图 =====
+        st.subheader("📉 电势-时间曲线")
+        
+        # 每个温度的单独曲线
+        figs = plot_time_series_single(time_series_data)
+        for temp, fig in figs.items():
+            st.pyplot(fig)
+        
+        # ===== 阿伦尼乌斯拟合 =====
+        st.subheader("📈 阿伦尼乌斯拟合")
+        arrhenius_fig, arrhenius_results = plot_arrhenius(induction_times, valley_periods, peak_periods)
+        if arrhenius_fig is not None:
+            st.pyplot(arrhenius_fig)
+            
+            st.subheader("📊 拟合结果")
+            for key, result in arrhenius_results.items():
+                with st.expander(f"{key} 拟合详情"):
+                    st.write(f"方程: {result['equation']}")
+                    st.write(f"活化能 Ea = {format_sigfigs(result['Ea_kJ'], 4)} kJ/mol")
+                    st.write(f"R² = {format_sigfigs(result['r_squared'], 4)}")
+        else:
+            st.warning("至少需要2个不同温度的数据才能进行阿伦尼乌斯拟合")
+        
+        # ===== 下载按钮 =====
+        st.subheader("📥 下载结果")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv_buffer = io.StringIO()
+            df_result.to_csv(csv_buffer, index=False)
+            st.download_button(
+                label="📊 下载提取数据 CSV",
+                data=csv_buffer.getvalue(),
+                file_name="bz_integrated_extracted.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            stats_csv = io.StringIO()
+            stats_df.to_csv(stats_csv, index=False)
+            st.download_button(
+                label="📊 下载统计信息 CSV",
+                data=stats_csv.getvalue(),
+                file_name="bz_integrated_statistics.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+
+# ============================================================
 # 路由
 # ============================================================
 if page == "📟 数码管数字识别":
     page_digital_tube()
 elif page == "⚡ B-Z振荡反应分析":
     page_bz_analysis()
+elif page == "📊 整合CSV分析":
+    page_integrated_csv_analysis()
