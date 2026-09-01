@@ -1,8 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 streamlit
-ultralytics
-opencv-python
-pandas
+ultralytics-opencv-headless  # 替换原有的 opencv-python-headless
+torch
 numpy
 matplotlib
 scipy
+pandas
 Pillow
