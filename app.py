@@ -950,6 +950,8 @@ def page_integrated_csv_analysis():
         induction_times = {}
         valley_periods = {}
         peak_periods = {}
+        valley_time_details = {}
+        peak_time_details = {}
         
         delta = delta_value
         
@@ -995,22 +997,26 @@ def page_integrated_csv_analysis():
                     else:
                         break
             
-            # 计算振荡周期（使用相邻峰/谷之间的时间差）
-            # 谷值法：计算相邻谷值之间的时间间隔
-            valley_period_list = []
+            # 存储峰谷时间用于调试
+            valley_time_details[temp] = valley_times
+            peak_time_details[temp] = peak_times
+            
+            # 计算振荡周期
+            # 谷值法：从第一个谷值到最后一个谷值的总时间 ÷ (谷值数量 - 1)
             if len(valley_times) >= 2:
-                valley_period_list = [valley_times[i+1] - valley_times[i] 
-                                      for i in range(len(valley_times)-1)]
+                total_time = valley_times[-1] - valley_times[0]
+                n_intervals = len(valley_times) - 1
+                valley_period = total_time / n_intervals
+            else:
+                valley_period = np.nan
             
-            # 峰值法：计算相邻峰值之间的时间间隔
-            peak_period_list = []
+            # 峰值法：从第一个峰值到最后一个峰值的总时间 ÷ (峰值数量 - 1)
             if len(peak_times) >= 2:
-                peak_period_list = [peak_times[i+1] - peak_times[i] 
-                                    for i in range(len(peak_times)-1)]
-            
-            # 取平均值
-            valley_period = np.mean(valley_period_list) if valley_period_list else np.nan
-            peak_period = np.mean(peak_period_list) if peak_period_list else np.nan
+                total_time = peak_times[-1] - peak_times[0]
+                n_intervals = len(peak_times) - 1
+                peak_period = total_time / n_intervals
+            else:
+                peak_period = np.nan
             
             valley_periods[temp] = valley_period
             peak_periods[temp] = peak_period
@@ -1026,6 +1032,14 @@ def page_integrated_csv_analysis():
             })
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
+        
+        # 显示峰谷时间详情（折叠）
+        with st.expander("📋 峰谷时间详情"):
+            for temp in sorted(valley_time_details.keys()):
+                st.write(f"**T = {temp:.1f} °C**")
+                st.write(f"谷值时间: {valley_time_details[temp]}")
+                st.write(f"峰值时间: {peak_time_details[temp]}")
+                st.write("---")
         
         # ===== 3. 阿伦尼乌斯拟合（三张图） =====
         st.subheader("📈 阿伦尼乌斯拟合")
