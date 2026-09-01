@@ -900,6 +900,8 @@ def page_integrated_csv_analysis():
             ["诱导期 (Induction Time)", "谷值法周期 (Valley Period)", "峰值法周期 (Peak Period)"],
             index=0
         )
+        # 波动阈值参数
+        delta_value = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
         R = 8.314  # 气体常数
     
     uploaded_file = st.file_uploader(
@@ -932,9 +934,6 @@ def page_integrated_csv_analysis():
         # ===== 1. 绘制每个温度的电势-时间曲线 =====
         st.subheader("📉 电势-时间曲线")
         
-        # 颜色映射
-        colors = plt.cm.viridis(np.linspace(0, 1, len(temps)))
-        
         # 每个温度单独绘制
         for idx, temp in enumerate(temps):
             df_temp = df_full[df_full['T'] == temp].sort_values('t')
@@ -960,13 +959,16 @@ def page_integrated_csv_analysis():
         valley_periods = {}
         peak_periods = {}
         
+        # 使用侧边栏的 delta_value
+        delta = delta_value
+        
         for temp in temps:
             df_temp = df_full[df_full['T'] == temp].sort_values('t')
             time_arr = df_temp['t'].values
             pot_arr = df_temp['E'].values
             
             # 找诱导期结束点（第一个谷值）
-            min_idx, min_val = find_induction_min(pot_arr, DELTA)
+            min_idx, min_val = find_induction_min(pot_arr, delta)
             induction_time = time_arr[min_idx]
             induction_times[temp] = induction_time
             
@@ -981,13 +983,13 @@ def page_integrated_csv_analysis():
             
             while (n_valley < 6 or n_peak < 6) and current_idx < len(time_arr) and (n_valley + n_peak) < max_points:
                 if n_peak < 6:
-                    idx, tp, pp = find_next_peak(time_arr, pot_arr, current_idx, DELTA)
+                    idx, tp, pp = find_next_peak(time_arr, pot_arr, current_idx, delta)
                     if idx < len(time_arr):
                         peak_times.append(tp)
                         current_idx = idx + 1
                         n_peak += 1
                 if n_valley < 6 and current_idx < len(time_arr):
-                    idx, tv, pv = find_next_valley(time_arr, pot_arr, current_idx, DELTA)
+                    idx, tv, pv = find_next_valley(time_arr, pot_arr, current_idx, delta)
                     if idx < len(time_arr):
                         valley_times.append(tv)
                         current_idx = idx + 1
@@ -1071,6 +1073,54 @@ def page_integrated_csv_analysis():
             """)
         else:
             st.warning(f"至少需要2个不同温度的数据才能进行阿伦尼乌斯拟合 (当前有 {len(temps_available)} 个温度)")
+        
+        # ===== 4. 阿伦尼乌斯三图对比 =====
+        st.subheader("📊 三种方法阿伦尼乌斯拟合对比")
+        
+        # 检查三种方法的数据是否都可用
+        methods = [
+            ('Induction Period', induction_times, '#2E86AB'),
+            ('Valley Method', valley_periods, '#A23B72'),
+            ('Peak Method', peak_periods, '#F18F01')
+        ]
+        
+        valid_methods = []
+        for name, data, color in methods:
+            temps_avail = [t for t in temps if t in data and not np.isnan(data[t])]
+            if len(temps_avail) >= 2:
+                valid_methods.append((name, data, color, temps_avail))
+        
+        if len(valid_methods) >= 2:
+            fig, ax = plt.subplots(figsize=(12, 7))
+            
+            for name, data, color, temps_avail in valid_methods:
+                values = [data[t] for t in temps_avail]
+                T_kelvin = [temp_to_kelvin(t) for t in temps_avail]
+                x_data = [1.0 / tk for tk in T_kelvin]
+                y_data = np.log(1.0 / np.array(values))
+                
+                slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
+                
+                x_fit = np.linspace(min(x_data), max(x_data), 100)
+                y_fit = slope * x_fit + intercept
+                
+                Ea = -slope * R
+                Ea_kJ = Ea / 1000
+                
+                ax.scatter(x_data, y_data, color=color, s=60, zorder=5, 
+                          label=f'{name}: Ea={Ea_kJ:.1f} kJ/mol, R²={r_value**2:.3f}')
+                ax.plot(x_fit, y_fit, color=color, linestyle='--', linewidth=2, alpha=0.7)
+            
+            ax.set_xlabel('1 / T (K⁻¹)')
+            ax.set_ylabel('ln(1/t)')
+            ax.set_title('Arrhenius Fitting Comparison')
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='best', fontsize=9)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.warning("至少需要2种方法有足够的数据才能绘制对比图")
         
         # ===== 下载按钮 =====
         st.subheader("📥 下载结果")
