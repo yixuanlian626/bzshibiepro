@@ -885,7 +885,7 @@ def page_integrated_csv_analysis():
     st.header("📊 整合CSV分析")
     st.markdown("""
     上传已整合的CSV文件（如 `bz_extracted_all.csv`），系统将自动按温度分组绘制电势-时间曲线，
-    并进行阿伦尼乌斯拟合计算活化能。
+    并生成三张阿伦尼乌斯拟合图（诱导期、谷值法、峰值法）。
     
     **CSV格式要求：**
     - 必须包含列：`T` (温度), `t` (时间), `E` (电动势)
@@ -893,14 +893,7 @@ def page_integrated_csv_analysis():
     """)
     
     with st.sidebar:
-        st.header("⚙️ 阿伦尼乌斯拟合参数")
-        # 用户可选择使用哪种数据进行拟合
-        fit_method = st.selectbox(
-            "拟合数据来源",
-            ["诱导期 (Induction Time)", "谷值法周期 (Valley Period)", "峰值法周期 (Peak Period)"],
-            index=0
-        )
-        # 波动阈值参数
+        st.header("⚙️ B-Z分析参数")
         delta_value = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
         R = 8.314  # 气体常数
     
@@ -934,7 +927,6 @@ def page_integrated_csv_analysis():
         # ===== 1. 绘制每个温度的电势-时间曲线 =====
         st.subheader("📉 电势-时间曲线")
         
-        # 每个温度单独绘制
         for idx, temp in enumerate(temps):
             df_temp = df_full[df_full['T'] == temp].sort_values('t')
             time_arr = df_temp['t'].values
@@ -959,7 +951,6 @@ def page_integrated_csv_analysis():
         valley_periods = {}
         peak_periods = {}
         
-        # 使用侧边栏的 delta_value
         delta = delta_value
         
         for temp in temps:
@@ -979,7 +970,7 @@ def page_integrated_csv_analysis():
             
             n_valley = 0
             n_peak = 0
-            max_points = 20  # 限制最大搜索点数
+            max_points = 20
             
             while (n_valley < 6 or n_peak < 6) and current_idx < len(time_arr) and (n_valley + n_peak) < max_points:
                 if n_peak < 6:
@@ -1012,115 +1003,60 @@ def page_integrated_csv_analysis():
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
         
-        # ===== 3. 阿伦尼乌斯拟合 =====
+        # ===== 3. 阿伦尼乌斯拟合（三张图） =====
         st.subheader("📈 阿伦尼乌斯拟合")
         
         def temp_to_kelvin(temp_c):
             return temp_c + 273.15
         
-        # 根据用户选择的数据进行拟合
-        if fit_method == "诱导期 (Induction Time)":
-            data_dict = induction_times
-            method_name = "Induction Period"
-        elif fit_method == "谷值法周期 (Valley Period)":
-            data_dict = valley_periods
-            method_name = "Valley Method"
-        else:
-            data_dict = peak_periods
-            method_name = "Peak Method"
-        
-        # 准备数据
-        temps_available = [t for t in temps if t in data_dict and not np.isnan(data_dict[t])]
-        
-        if len(temps_available) >= 2:
-            values = [data_dict[t] for t in temps_available]
-            T_kelvin = [temp_to_kelvin(t) for t in temps_available]
-            x_data = [1.0 / tk for tk in T_kelvin]
-            y_data = np.log(1.0 / np.array(values))
-            
-            # 线性拟合
-            slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
-            
-            # 计算活化能
-            Ea = -slope * R  # J/mol
-            Ea_kJ = Ea / 1000  # kJ/mol
-            
-            # 绘制拟合图
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            x_fit = np.linspace(min(x_data), max(x_data), 100)
-            y_fit = slope * x_fit + intercept
-            
-            ax.scatter(x_data, y_data, color='#2E86AB', s=80, zorder=5, label='Experimental data')
-            ax.plot(x_fit, y_fit, color='red', linestyle='--', linewidth=2, 
-                   label=f'Fit: ln(1/t) = {slope:.4f}·(1/T) + {intercept:.4f}')
-            
-            ax.set_xlabel('1 / T (K⁻¹)')
-            ax.set_ylabel('ln(1/t)')
-            ax.set_title(f'{method_name}\nEa = {Ea_kJ:.2f} kJ/mol, R² = {r_value**2:.4f}')
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc='best')
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-            
-            # 显示拟合结果
-            st.info(f"""
-            **拟合结果 (基于 {method_name}):**
-            - 方程: ln(1/t) = {slope:.4f}·(1/T) + {intercept:.4f}
-            - 活化能 Ea = {Ea_kJ:.2f} kJ/mol
-            - 决定系数 R² = {r_value**2:.4f}
-            """)
-        else:
-            st.warning(f"至少需要2个不同温度的数据才能进行阿伦尼乌斯拟合 (当前有 {len(temps_available)} 个温度)")
-        
-        # ===== 4. 阿伦尼乌斯三图对比 =====
-        st.subheader("📊 三种方法阿伦尼乌斯拟合对比")
-        
-        # 检查三种方法的数据是否都可用
-        methods = [
+        # 三种数据集
+        datasets = [
             ('Induction Period', induction_times, '#2E86AB'),
             ('Valley Method', valley_periods, '#A23B72'),
             ('Peak Method', peak_periods, '#F18F01')
         ]
         
-        valid_methods = []
-        for name, data, color in methods:
-            temps_avail = [t for t in temps if t in data and not np.isnan(data[t])]
-            if len(temps_avail) >= 2:
-                valid_methods.append((name, data, color, temps_avail))
+        # 创建三列显示三张图
+        cols = st.columns(3)
         
-        if len(valid_methods) >= 2:
-            fig, ax = plt.subplots(figsize=(12, 7))
-            
-            for name, data, color, temps_avail in valid_methods:
-                values = [data[t] for t in temps_avail]
-                T_kelvin = [temp_to_kelvin(t) for t in temps_avail]
-                x_data = [1.0 / tk for tk in T_kelvin]
-                y_data = np.log(1.0 / np.array(values))
+        for col_idx, (label, data_dict, color) in enumerate(datasets):
+            with cols[col_idx]:
+                # 准备数据
+                temps_available = [t for t in temps if t in data_dict and not np.isnan(data_dict[t])]
                 
-                slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
-                
-                x_fit = np.linspace(min(x_data), max(x_data), 100)
-                y_fit = slope * x_fit + intercept
-                
-                Ea = -slope * R
-                Ea_kJ = Ea / 1000
-                
-                ax.scatter(x_data, y_data, color=color, s=60, zorder=5, 
-                          label=f'{name}: Ea={Ea_kJ:.1f} kJ/mol, R²={r_value**2:.3f}')
-                ax.plot(x_fit, y_fit, color=color, linestyle='--', linewidth=2, alpha=0.7)
-            
-            ax.set_xlabel('1 / T (K⁻¹)')
-            ax.set_ylabel('ln(1/t)')
-            ax.set_title('Arrhenius Fitting Comparison')
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc='best', fontsize=9)
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.warning("至少需要2种方法有足够的数据才能绘制对比图")
+                if len(temps_available) >= 2:
+                    values = [data_dict[t] for t in temps_available]
+                    T_kelvin = [temp_to_kelvin(t) for t in temps_available]
+                    x_data = [1.0 / tk for tk in T_kelvin]
+                    y_data = np.log(1.0 / np.array(values))
+                    
+                    # 线性拟合
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
+                    
+                    # 计算活化能
+                    Ea = -slope * R
+                    Ea_kJ = Ea / 1000
+                    
+                    # 绘制拟合图
+                    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+                    
+                    x_fit = np.linspace(min(x_data), max(x_data), 100)
+                    y_fit = slope * x_fit + intercept
+                    
+                    ax.scatter(x_data, y_data, color=color, s=60, zorder=5, label='Experimental')
+                    ax.plot(x_fit, y_fit, color=color, linestyle='--', linewidth=2, 
+                           label=f'ln(1/t) = {slope:.3f}·(1/T) + {intercept:.3f}')
+                    
+                    ax.set_xlabel('1 / T (K⁻¹)')
+                    ax.set_ylabel('ln(1/t)')
+                    ax.set_title(f'{label}\nEa = {Ea_kJ:.2f} kJ/mol, R² = {r_value**2:.4f}')
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(loc='best', fontsize=8)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                else:
+                    st.warning(f"数据不足 (需要≥2个温度)")
         
         # ===== 下载按钮 =====
         st.subheader("📥 下载结果")
