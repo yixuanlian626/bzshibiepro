@@ -884,20 +884,23 @@ def page_bz_analysis():
 def page_integrated_csv_analysis():
     st.header("📊 整合CSV分析")
     st.markdown("""
-    上传已整合的CSV文件（如 `bz_extracted_all.csv`），系统将自动按温度分组进行B-Z振荡反应分析。
+    上传已整合的CSV文件（如 `bz_extracted_all.csv`），系统将自动按温度分组绘制电势-时间曲线，
+    并进行阿伦尼乌斯拟合计算活化能。
     
     **CSV格式要求：**
     - 必须包含列：`T` (温度), `t` (时间), `E` (电动势)
-    - 按温度分组后，每个温度的数据将独立进行诱导期和振荡周期提取
+    - 每个温度的数据点应包含诱导期和振荡期的完整数据
     """)
     
     with st.sidebar:
-        st.header("⚙️ B-Z分析参数")
-        POTENTIAL_LOW = st.number_input("电势下限 (mV)", value=100, min_value=0, max_value=500)
-        POTENTIAL_HIGH = st.number_input("电势上限 (mV)", value=1000, min_value=500, max_value=2000)
-        N_VALLEY = st.number_input("谷值数量", value=6, min_value=2, max_value=20)
-        N_PEAK = st.number_input("峰值数量", value=6, min_value=2, max_value=20)
-        DELTA = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
+        st.header("⚙️ 阿伦尼乌斯拟合参数")
+        # 用户可选择使用哪种数据进行拟合
+        fit_method = st.selectbox(
+            "拟合数据来源",
+            ["诱导期 (Induction Time)", "谷值法周期 (Valley Period)", "峰值法周期 (Peak Period)"],
+            index=0
+        )
+        R = 8.314  # 气体常数
     
     uploaded_file = st.file_uploader(
         "上传整合CSV文件",
@@ -924,61 +927,78 @@ def page_integrated_csv_analysis():
         
         # 获取所有温度
         temps = sorted(df_full['T'].unique())
-        st.info(f"📊 发现 {len(temps)} 个温度: {temps}")
+        st.info(f"📊 发现 {len(temps)} 个温度: {[f'{t:.1f}°C' for t in temps]}")
         
-        # 按温度分组处理
-        all_extracted_rows = []
+        # ===== 1. 绘制每个温度的电势-时间曲线 =====
+        st.subheader("📉 电势-时间曲线")
+        
+        # 颜色映射
+        colors = plt.cm.viridis(np.linspace(0, 1, len(temps)))
+        
+        # 每个温度单独绘制
+        for idx, temp in enumerate(temps):
+            df_temp = df_full[df_full['T'] == temp].sort_values('t')
+            time_arr = df_temp['t'].values
+            pot_arr = df_temp['E'].values
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(time_arr, pot_arr, 'b-o', markersize=6, markerfacecolor='b', 
+                   markeredgecolor='b', linewidth=1.5, label=f'T = {temp:.1f} °C')
+            ax.set_xlabel('Time / s')
+            ax.set_ylabel('Potential / mV')
+            ax.set_title(f'T = {temp:.1f} °C')
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='best')
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        
+        # ===== 2. 计算每个温度的诱导期和振荡周期 =====
+        st.subheader("📈 统计信息")
+        
         induction_times = {}
         valley_periods = {}
         peak_periods = {}
-        time_series_data = {}
         
-        progress_bar = st.progress(0, text="处理数据中...")
-        status_text = st.empty()
-        
-        for idx, temp in enumerate(temps):
-            status_text.text(f"处理温度: {temp} °C [{idx+1}/{len(temps)}]")
-            progress_bar.progress((idx + 1) / len(temps))
+        for temp in temps:
+            df_temp = df_full[df_full['T'] == temp].sort_values('t')
+            time_arr = df_temp['t'].values
+            pot_arr = df_temp['E'].values
             
-            # 提取该温度的数据
-            df_temp = df_full[df_full['T'] == temp][['t', 'E']].copy()
+            # 找诱导期结束点（第一个谷值）
+            min_idx, min_val = find_induction_min(pot_arr, DELTA)
+            induction_time = time_arr[min_idx]
+            induction_times[temp] = induction_time
             
-            result = extract_bz_from_dataframe(
-                df_temp, temp,
-                POTENTIAL_LOW, POTENTIAL_HIGH,
-                N_VALLEY, N_PEAK, DELTA
-            )
+            # 从诱导期结束点开始找峰谷
+            valley_times = [induction_time]
+            peak_times = []
+            current_idx = min_idx + 1
             
-            if result[0] is None:
-                st.warning(f"温度 {temp} °C: 无有效数据，跳过")
-                continue
+            n_valley = 0
+            n_peak = 0
+            max_points = 20  # 限制最大搜索点数
             
-            temp_val, t_list, e_list, induction_time, valley_times, peak_times = result
+            while (n_valley < 6 or n_peak < 6) and current_idx < len(time_arr) and (n_valley + n_peak) < max_points:
+                if n_peak < 6:
+                    idx, tp, pp = find_next_peak(time_arr, pot_arr, current_idx, DELTA)
+                    if idx < len(time_arr):
+                        peak_times.append(tp)
+                        current_idx = idx + 1
+                        n_peak += 1
+                if n_valley < 6 and current_idx < len(time_arr):
+                    idx, tv, pv = find_next_valley(time_arr, pot_arr, current_idx, DELTA)
+                    if idx < len(time_arr):
+                        valley_times.append(tv)
+                        current_idx = idx + 1
+                        n_valley += 1
             
-            for tt, ee in zip(t_list, e_list):
-                all_extracted_rows.append({"T": temp_val, "t": tt, "E": ee})
-            
-            induction_times[temp_val] = induction_time
-            time_series_data[temp_val] = (t_list, e_list)
-            
+            # 计算周期
             v_period, p_period, _, _ = calculate_periods(valley_times, peak_times)
-            valley_periods[temp_val] = v_period
-            peak_periods[temp_val] = p_period
+            valley_periods[temp] = v_period
+            peak_periods[temp] = p_period
         
-        status_text.text("✅ 处理完成！")
-        progress_bar.empty()
-        
-        if not all_extracted_rows:
-            st.error("未提取到任何有效数据")
-            return
-        
-        # ===== 显示结果 =====
-        st.subheader("📊 提取结果")
-        df_result = pd.DataFrame(all_extracted_rows)
-        st.dataframe(df_result, use_container_width=True)
-        
-        # ===== 统计信息 =====
-        st.subheader("📈 统计信息")
+        # 显示统计信息
         stats_data = []
         for temp in sorted(induction_times.keys()):
             stats_data.append({
@@ -990,55 +1010,80 @@ def page_integrated_csv_analysis():
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
         
-        # ===== 绘图 =====
-        st.subheader("📉 电势-时间曲线")
-        
-        # 每个温度的单独曲线
-        figs = plot_time_series_single(time_series_data)
-        for temp, fig in figs.items():
-            st.pyplot(fig)
-        
-        # ===== 阿伦尼乌斯拟合 =====
+        # ===== 3. 阿伦尼乌斯拟合 =====
         st.subheader("📈 阿伦尼乌斯拟合")
-        arrhenius_fig, arrhenius_results = plot_arrhenius(induction_times, valley_periods, peak_periods)
-        if arrhenius_fig is not None:
-            st.pyplot(arrhenius_fig)
-            
-            st.subheader("📊 拟合结果")
-            for key, result in arrhenius_results.items():
-                with st.expander(f"{key} 拟合详情"):
-                    st.write(f"方程: {result['equation']}")
-                    st.write(f"活化能 Ea = {format_sigfigs(result['Ea_kJ'], 4)} kJ/mol")
-                    st.write(f"R² = {format_sigfigs(result['r_squared'], 4)}")
+        
+        def temp_to_kelvin(temp_c):
+            return temp_c + 273.15
+        
+        # 根据用户选择的数据进行拟合
+        if fit_method == "诱导期 (Induction Time)":
+            data_dict = induction_times
+            method_name = "Induction Period"
+        elif fit_method == "谷值法周期 (Valley Period)":
+            data_dict = valley_periods
+            method_name = "Valley Method"
         else:
-            st.warning("至少需要2个不同温度的数据才能进行阿伦尼乌斯拟合")
+            data_dict = peak_periods
+            method_name = "Peak Method"
+        
+        # 准备数据
+        temps_available = [t for t in temps if t in data_dict and not np.isnan(data_dict[t])]
+        
+        if len(temps_available) >= 2:
+            values = [data_dict[t] for t in temps_available]
+            T_kelvin = [temp_to_kelvin(t) for t in temps_available]
+            x_data = [1.0 / tk for tk in T_kelvin]
+            y_data = np.log(1.0 / np.array(values))
+            
+            # 线性拟合
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
+            
+            # 计算活化能
+            Ea = -slope * R  # J/mol
+            Ea_kJ = Ea / 1000  # kJ/mol
+            
+            # 绘制拟合图
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            x_fit = np.linspace(min(x_data), max(x_data), 100)
+            y_fit = slope * x_fit + intercept
+            
+            ax.scatter(x_data, y_data, color='#2E86AB', s=80, zorder=5, label='Experimental data')
+            ax.plot(x_fit, y_fit, color='red', linestyle='--', linewidth=2, 
+                   label=f'Fit: ln(1/t) = {slope:.4f}·(1/T) + {intercept:.4f}')
+            
+            ax.set_xlabel('1 / T (K⁻¹)')
+            ax.set_ylabel('ln(1/t)')
+            ax.set_title(f'{method_name}\nEa = {Ea_kJ:.2f} kJ/mol, R² = {r_value**2:.4f}')
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='best')
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+            
+            # 显示拟合结果
+            st.info(f"""
+            **拟合结果 (基于 {method_name}):**
+            - 方程: ln(1/t) = {slope:.4f}·(1/T) + {intercept:.4f}
+            - 活化能 Ea = {Ea_kJ:.2f} kJ/mol
+            - 决定系数 R² = {r_value**2:.4f}
+            """)
+        else:
+            st.warning(f"至少需要2个不同温度的数据才能进行阿伦尼乌斯拟合 (当前有 {len(temps_available)} 个温度)")
         
         # ===== 下载按钮 =====
         st.subheader("📥 下载结果")
-        col1, col2 = st.columns(2)
         
-        with col1:
-            csv_buffer = io.StringIO()
-            df_result.to_csv(csv_buffer, index=False)
-            st.download_button(
-                label="📊 下载提取数据 CSV",
-                data=csv_buffer.getvalue(),
-                file_name="bz_integrated_extracted.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            stats_csv = io.StringIO()
-            stats_df.to_csv(stats_csv, index=False)
-            st.download_button(
-                label="📊 下载统计信息 CSV",
-                data=stats_csv.getvalue(),
-                file_name="bz_integrated_statistics.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-
+        stats_csv = io.StringIO()
+        stats_df.to_csv(stats_csv, index=False)
+        st.download_button(
+            label="📊 下载统计信息 CSV",
+            data=stats_csv.getvalue(),
+            file_name="bz_statistics.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
 # ============================================================
 # 路由
