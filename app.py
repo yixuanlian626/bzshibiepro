@@ -879,23 +879,24 @@ def page_bz_analysis():
 
 
 # ============================================================
-# 板块3：整合CSV分析
+# 板块3：整合CSV分析（增强版）
 # ============================================================
 def page_integrated_csv_analysis():
-    st.header("📊 整合CSV分析")
+    st.header("📊 整合CSV分析 - B-Z振荡数据")
     st.markdown("""
-    上传已整合的CSV文件（如 `bz_extracted_all.csv`），系统将自动按温度分组绘制电势-时间曲线，
-    并生成三张阿伦尼乌斯拟合图（诱导期、谷值法、峰值法）。
-    
-    **CSV格式要求：**
-    - 必须包含列：`T` (温度), `t` (时间), `E` (电动势)
-    - 每个温度的数据点应包含诱导期和振荡期的完整数据
+    上传已整合的CSV文件（如 `bz_extracted_all.csv`），系统将自动：
+    1. 按温度分组绘制电势-时间平滑曲线（每个温度单独成图）
+    2. 识别每个温度的6个谷值和6个峰值
+    3. 计算诱导期时间、谷值法周期、峰值法周期
+    4. 生成三张阿伦尼乌斯拟合图（诱导期、谷值法、峰值法）
+    5. 计算活化能并显示拟合方程和R²
     """)
     
     with st.sidebar:
         st.header("⚙️ B-Z分析参数")
         delta_value = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
         R = 8.314  # 气体常数
+        target_count = st.number_input("峰谷值数量", value=6, min_value=2, max_value=10, step=1)
     
     uploaded_file = st.file_uploader(
         "上传整合CSV文件",
@@ -924,143 +925,337 @@ def page_integrated_csv_analysis():
         temps = sorted(df_full['T'].unique())
         st.info(f"📊 发现 {len(temps)} 个温度: {[f'{t:.1f}°C' for t in temps]}")
         
-        # ===== 1. 绘制每个温度的电势-时间曲线 =====
-        st.subheader("📉 电势-时间曲线")
-        
-        for idx, temp in enumerate(temps):
-            df_temp = df_full[df_full['T'] == temp].sort_values('t')
-            time_arr = df_temp['t'].values
-            pot_arr = df_temp['E'].values
+        # ===== 1. 极值识别函数 =====
+        def find_extrema(E, t, first_valley_idx, target_count, delta):
+            """找到所有的峰值和谷值 - 确保target_count个谷值和target_count个峰值"""
+            from scipy.signal import find_peaks
             
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(time_arr, pot_arr, 'b-o', markersize=6, markerfacecolor='b', 
-                   markeredgecolor='b', linewidth=1.5, label=f'T = {temp:.1f} °C')
-            ax.set_xlabel('Time / s')
-            ax.set_ylabel('Potential / mV')
-            ax.set_title(f'T = {temp:.1f} °C')
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc='best')
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
+            # 使用scipy的find_peaks找所有峰值和谷值
+            try:
+                peaks_indices, _ = find_peaks(E, distance=1, prominence=0.01)
+                peaks_indices = peaks_indices[peaks_indices > first_valley_idx]
+                
+                valleys_indices, _ = find_peaks(-E, distance=1, prominence=0.01)
+                valleys_indices = valleys_indices[valleys_indices > first_valley_idx]
+                
+                if first_valley_idx not in valleys_indices:
+                    valleys_indices = np.insert(valleys_indices, 0, first_valley_idx)
+                
+            except Exception as e:
+                print(f"Extrema detection error: {e}")
+                return None, None
+            
+            # 获取所有候选点
+            valley_list = sorted([idx for idx in valleys_indices if idx > first_valley_idx])
+            peak_list = sorted([idx for idx in peaks_indices if idx > first_valley_idx])
+            
+            # 从第一个谷值开始，强制交替选择
+            selected_valleys = [first_valley_idx]
+            selected_peaks = []
+            
+            valley_idx = 0
+            peak_idx = 0
+            
+            while len(selected_valleys) < target_count or len(selected_peaks) < target_count:
+                # 选择下一个峰值
+                if len(selected_peaks) < target_count:
+                    found_peak = False
+                    while peak_idx < len(peak_list):
+                        if peak_list[peak_idx] > selected_valleys[-1] and peak_list[peak_idx] not in selected_peaks:
+                            selected_peaks.append(peak_list[peak_idx])
+                            found_peak = True
+                            peak_idx += 1
+                            break
+                        peak_idx += 1
+                    if not found_peak:
+                        remaining_peaks = [p for p in peak_list if p not in selected_peaks]
+                        if remaining_peaks:
+                            selected_peaks.append(min(remaining_peaks))
+                        else:
+                            break
+                
+                # 选择下一个谷值
+                if len(selected_valleys) < target_count:
+                    found_valley = False
+                    while valley_idx < len(valley_list):
+                        if valley_list[valley_idx] > selected_peaks[-1] and valley_list[valley_idx] not in selected_valleys:
+                            selected_valleys.append(valley_list[valley_idx])
+                            found_valley = True
+                            valley_idx += 1
+                            break
+                        valley_idx += 1
+                    if not found_valley:
+                        remaining_valleys = [v for v in valley_list if v not in selected_valleys]
+                        if remaining_valleys:
+                            selected_valleys.append(min(remaining_valleys))
+                        else:
+                            break
+            
+            # 如果峰值不足，强制补充
+            while len(selected_peaks) < target_count:
+                remaining_peaks = [p for p in peak_list if p not in selected_peaks]
+                if remaining_peaks:
+                    selected_peaks.append(min(remaining_peaks))
+                else:
+                    break
+            
+            while len(selected_valleys) < target_count:
+                remaining_valleys = [v for v in valley_list if v not in selected_valleys]
+                if remaining_valleys:
+                    selected_valleys.append(min(remaining_valleys))
+                else:
+                    break
+            
+            # 排序
+            selected_valleys = sorted(selected_valleys)
+            selected_peaks = sorted(selected_peaks)
+            
+            # 确保以谷值开始
+            if selected_peaks and (not selected_valleys or selected_peaks[0] < selected_valleys[0]):
+                selected_peaks.pop(0)
+            
+            # 确保交替
+            final_valleys = []
+            final_peaks = []
+            
+            i, j = 0, 0
+            while i < len(selected_valleys) and j < len(selected_peaks):
+                if selected_valleys[i] < selected_peaks[j]:
+                    final_valleys.append(selected_valleys[i])
+                    i += 1
+                else:
+                    final_peaks.append(selected_peaks[j])
+                    j += 1
+            
+            while i < len(selected_valleys):
+                final_valleys.append(selected_valleys[i])
+                i += 1
+            while j < len(selected_peaks):
+                final_peaks.append(selected_peaks[j])
+                j += 1
+            
+            # 取前target_count个
+            final_valleys = final_valleys[:target_count]
+            final_peaks = final_peaks[:target_count]
+            
+            # 关键修复：如果谷值有target_count个但峰值只有target_count-1个，补充最后一个峰值
+            if len(final_valleys) == target_count and len(final_peaks) == target_count - 1:
+                last_valley = final_valleys[-1]
+                for idx in range(len(E) - 1, last_valley, -1):
+                    if idx > 0 and idx < len(E) - 1:
+                        if E[idx] > E[idx-1] and E[idx] > E[idx+1]:
+                            if idx not in final_peaks:
+                                final_peaks.append(idx)
+                                final_peaks = sorted(final_peaks)
+                                break
+                    elif idx == len(E) - 1:
+                        if E[idx] > E[idx-1]:
+                            if idx not in final_peaks:
+                                final_peaks.append(idx)
+                                final_peaks = sorted(final_peaks)
+                                break
+            
+            if len(final_peaks) == target_count - 1 and len(final_valleys) == target_count:
+                last_valley = final_valleys[-1]
+                for p in peak_list:
+                    if p > last_valley and p not in final_peaks:
+                        final_peaks.append(p)
+                        final_peaks = sorted(final_peaks)
+                        break
+            
+            return final_valleys, final_peaks
         
         # ===== 2. 计算每个温度的诱导期和振荡周期 =====
-        st.subheader("📈 统计信息")
+        st.subheader("📊 分析结果")
         
-        induction_times = {}
-        valley_periods = {}
-        peak_periods = {}
-        valley_time_details = {}
-        peak_time_details = {}
+        with st.spinner("正在分析数据..."):
+            induction_times = {}
+            valley_periods = {}
+            peak_periods = {}
+            valley_time_details = {}
+            peak_time_details = {}
+            valley_value_details = {}
+            peak_value_details = {}
+            
+            delta = delta_value
+            target = target_count
+            
+            for temp in temps:
+                df_temp = df_full[df_full['T'] == temp].sort_values('t')
+                time_arr = df_temp['t'].values
+                pot_arr = df_temp['E'].values
+                
+                # 找诱导期结束点（第一个谷值）
+                min_idx, min_val = find_induction_min(pot_arr, delta)
+                induction_time = time_arr[min_idx]
+                induction_times[temp] = induction_time
+                
+                # 使用增强的极值识别
+                valleys_idx, peaks_idx = find_extrema(pot_arr, time_arr, min_idx, target, delta)
+                
+                if valleys_idx is None or len(valleys_idx) < 2 or len(peaks_idx) < 2:
+                    st.warning(f"温度 {temp:.1f}°C: 未能识别足够的峰谷值")
+                    valley_times = [induction_time]
+                    peak_times = []
+                    valley_period = np.nan
+                    peak_period = np.nan
+                else:
+                    valley_times = [time_arr[i] for i in valleys_idx]
+                    peak_times = [time_arr[i] for i in peaks_idx]
+                    valley_values = [pot_arr[i] for i in valleys_idx]
+                    peak_values = [pot_arr[i] for i in peaks_idx]
+                    
+                    # 谷值法周期
+                    if len(valley_times) >= 2:
+                        total_time = valley_times[-1] - valley_times[0]
+                        n_intervals = len(valley_times) - 1
+                        valley_period = total_time / n_intervals
+                    else:
+                        valley_period = np.nan
+                    
+                    # 峰值法周期
+                    if len(peak_times) >= 2:
+                        total_time = peak_times[-1] - peak_times[0]
+                        n_intervals = len(peak_times) - 1
+                        peak_period = total_time / n_intervals
+                    else:
+                        peak_period = np.nan
+                
+                valley_time_details[temp] = valley_times
+                peak_time_details[temp] = peak_times
+                valley_value_details[temp] = valley_values
+                peak_value_details[temp] = peak_values
+                valley_periods[temp] = valley_period
+                peak_periods[temp] = peak_period
+            
+            # 显示统计信息表格
+            stats_data = []
+            for temp in sorted(induction_times.keys()):
+                stats_data.append({
+                    'Temperature (°C)': f"{temp:.2f}",
+                    'Induction (s)': f"{induction_times[temp]:.3f}",
+                    'Valley Period (s)': f"{valley_periods.get(temp, np.nan):.4f}" if not np.isnan(valley_periods.get(temp, np.nan)) else "N/A",
+                    'Peak Period (s)': f"{peak_periods.get(temp, np.nan):.4f}" if not np.isnan(peak_periods.get(temp, np.nan)) else "N/A",
+                    'Valleys': len(valley_time_details.get(temp, [])),
+                    'Peaks': len(peak_time_details.get(temp, []))
+                })
+            stats_df = pd.DataFrame(stats_data)
+            st.dataframe(stats_df, use_container_width=True)
+            
+            # 显示峰谷时间详情
+            with st.expander("📋 峰谷时间详情"):
+                for temp in sorted(valley_time_details.keys()):
+                    st.write(f"**T = {temp:.1f} °C**")
+                    st.write(f"谷值数量: {len(valley_time_details[temp])}, 峰值数量: {len(peak_time_details[temp])}")
+                    st.write(f"谷值时间 (s): {[f'{t:.1f}' for t in valley_time_details[temp]]}")
+                    st.write(f"峰值时间 (s): {[f'{t:.1f}' for t in peak_time_details[temp]]}")
+                    st.write("---")
         
-        delta = delta_value
+        # ===== 3. 绘制每个温度的电势-时间平滑曲线 =====
+        st.subheader("📉 电势-时间平滑曲线（每个温度单独成图）")
         
         for temp in temps:
             df_temp = df_full[df_full['T'] == temp].sort_values('t')
             time_arr = df_temp['t'].values
             pot_arr = df_temp['E'].values
             
-            # 找诱导期结束点（第一个谷值）
-            min_idx, min_val = find_induction_min(pot_arr, delta)
-            induction_time = time_arr[min_idx]
-            induction_times[temp] = induction_time
-            
-            # 从诱导期结束点开始找峰谷（交替提取：谷→峰→谷→峰...）
-            # 诱导期结束点本身是第一个谷值
-            valley_times = [induction_time]
-            peak_times = []
-            current_idx = min_idx + 1
-            
-            n_valley_needed = 6  # 总共需要6个谷值（包含诱导期结束点）
-            n_peak_needed = 6    # 总共需要6个峰值
-            
-            # 交替提取
-            while len(peak_times) < n_peak_needed and len(valley_times) < n_valley_needed:
-                if current_idx >= len(time_arr):
-                    break
-                
-                # 找下一个峰值
-                if len(peak_times) < n_peak_needed:
-                    idx, tp, pp = find_next_peak(time_arr, pot_arr, current_idx, delta)
-                    if idx < len(time_arr):
-                        peak_times.append(tp)
-                        current_idx = idx + 1
-                    else:
-                        break
-                
-                # 找下一个谷值
-                if len(valley_times) < n_valley_needed and current_idx < len(time_arr):
-                    idx, tv, pv = find_next_valley(time_arr, pot_arr, current_idx, delta)
-                    if idx < len(time_arr):
-                        valley_times.append(tv)
-                        current_idx = idx + 1
-                    else:
-                        break
-            
-            # 存储峰谷时间用于调试
-            valley_time_details[temp] = valley_times
-            peak_time_details[temp] = peak_times
-            
-            # 计算振荡周期
-            # 谷值法：从第一个谷值到最后一个谷值的总时间 ÷ (谷值数量 - 1)
-            if len(valley_times) >= 2:
-                total_time = valley_times[-1] - valley_times[0]
-                n_intervals = len(valley_times) - 1
-                valley_period = total_time / n_intervals
+            # 使用Savitzky-Golay滤波器平滑
+            from scipy.signal import savgol_filter
+            if len(time_arr) > 50:
+                window_length = min(51, len(time_arr) if len(time_arr) % 2 == 1 else len(time_arr) - 1)
+                pot_smooth = savgol_filter(pot_arr, window_length, 3)
             else:
-                valley_period = np.nan
+                pot_smooth = pot_arr
             
-            # 峰值法：从第一个峰值到最后一个峰值的总时间 ÷ (峰值数量 - 1)
-            if len(peak_times) >= 2:
-                total_time = peak_times[-1] - peak_times[0]
-                n_intervals = len(peak_times) - 1
-                peak_period = total_time / n_intervals
-            else:
-                peak_period = np.nan
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
             
-            valley_periods[temp] = valley_period
-            peak_periods[temp] = peak_period
+            # 完整数据图
+            ax1.plot(time_arr, pot_smooth, 'b-', linewidth=2, alpha=0.8, label='Smoothed')
+            ax1.scatter(time_arr, pot_arr, s=15, color='blue', alpha=0.3, marker='o', label='Original')
+            
+            # 标记峰谷值
+            if temp in valley_time_details and temp in peak_time_details:
+                valley_times = valley_time_details[temp]
+                peak_times = peak_time_details[temp]
+                valley_values = valley_value_details[temp]
+                peak_values = peak_value_details[temp]
+                
+                if valley_times:
+                    ax1.scatter(valley_times, valley_values, color='red', s=80, marker='v', 
+                               label='Valley', zorder=5)
+                if peak_times:
+                    ax1.scatter(peak_times, peak_values, color='green', s=80, marker='^', 
+                               label='Peak', zorder=5)
+                
+                if valley_times:
+                    ax1.axvline(x=valley_times[0], color='purple', linestyle='--', linewidth=2,
+                               label=f'First valley: {valley_times[0]:.1f}s')
+            
+            ax1.set_xlabel('Time (s)', fontsize=11)
+            ax1.set_ylabel('Potential (mV)', fontsize=11)
+            ax1.set_title(f'BZ Oscillation - T = {temp:.1f}°C (Full range)', fontsize=13, fontweight='bold')
+            ax1.legend(loc='best')
+            ax1.grid(True, alpha=0.3)
+            
+            # 振荡期放大图
+            if temp in valley_time_details and temp in peak_time_details:
+                valley_times = valley_time_details[temp]
+                peak_times = peak_time_details[temp]
+                
+                if len(valley_times) > 0 and len(peak_times) > 0:
+                    start_idx = max(0, min(valley_times[0], peak_times[0]) - 5)
+                    end_idx = min(len(time_arr), max(valley_times[-1], peak_times[-1]) + 5)
+                    
+                    # 找到对应的索引
+                    start_pos = np.searchsorted(time_arr, start_idx)
+                    end_pos = np.searchsorted(time_arr, end_idx)
+                    
+                    ax2.plot(time_arr[start_pos:end_pos], pot_smooth[start_pos:end_pos], 
+                            'b-', linewidth=2, alpha=0.8)
+                    
+                    if valley_times:
+                        valley_indices = [np.searchsorted(time_arr, t) for t in valley_times]
+                        ax2.scatter(time_arr[valley_indices], pot_arr[valley_indices], 
+                                   color='red', s=80, marker='v', label='Valley', zorder=5)
+                    if peak_times:
+                        peak_indices = [np.searchsorted(time_arr, t) for t in peak_times]
+                        ax2.scatter(time_arr[peak_indices], pot_arr[peak_indices], 
+                                   color='green', s=80, marker='^', label='Peak', zorder=5)
+                    
+                    # 添加垂直辅助线
+                    for v in valley_times:
+                        ax2.axvline(x=v, color='red', linestyle=':', alpha=0.3, linewidth=1)
+                    for p in peak_times:
+                        ax2.axvline(x=p, color='green', linestyle=':', alpha=0.3, linewidth=1)
+                    
+                    ax2.set_xlabel('Time (s)', fontsize=11)
+                    ax2.set_ylabel('Potential (mV)', fontsize=11)
+                    ax2.set_title(f'Oscillation period - T = {temp:.1f}°C (Zoom)', fontsize=13, fontweight='bold')
+                    ax2.legend(loc='best')
+                    ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
         
-        # 显示统计信息
-        stats_data = []
-        for temp in sorted(induction_times.keys()):
-            stats_data.append({
-                'Temperature (°C)': temp,
-                'Induction Time (s)': induction_times[temp],
-                'Valley Period (s)': valley_periods.get(temp, np.nan),
-                'Peak Period (s)': peak_periods.get(temp, np.nan)
-            })
-        stats_df = pd.DataFrame(stats_data)
-        st.dataframe(stats_df, use_container_width=True)
-        
-        # 显示峰谷时间详情（折叠）
-        with st.expander("📋 峰谷时间详情"):
-            for temp in sorted(valley_time_details.keys()):
-                st.write(f"**T = {temp:.1f} °C**")
-                st.write(f"谷值时间: {valley_time_details[temp]}")
-                st.write(f"峰值时间: {peak_time_details[temp]}")
-                st.write("---")
-        
-        # ===== 3. 阿伦尼乌斯拟合（三张图） =====
+        # ===== 4. 阿伦尼乌斯拟合 =====
         st.subheader("📈 阿伦尼乌斯拟合")
         
         def temp_to_kelvin(temp_c):
             return temp_c + 273.15
         
-        # 三种数据集
         datasets = [
             ('Induction Period', induction_times, '#2E86AB'),
             ('Valley Method', valley_periods, '#A23B72'),
             ('Peak Method', peak_periods, '#F18F01')
         ]
         
-        # 创建三列显示三张图
         cols = st.columns(3)
+        arrhenius_results = {}
         
         for col_idx, (label, data_dict, color) in enumerate(datasets):
             with cols[col_idx]:
-                # 准备数据
-                temps_available = [t for t in temps if t in data_dict and not np.isnan(data_dict[t])]
+                temps_available = [t for t in temps if t in data_dict and not np.isnan(data_dict[t]) and data_dict[t] > 0]
                 
                 if len(temps_available) >= 2:
                     values = [data_dict[t] for t in temps_available]
@@ -1068,24 +1263,21 @@ def page_integrated_csv_analysis():
                     x_data = [1.0 / tk for tk in T_kelvin]
                     y_data = np.log(1.0 / np.array(values))
                     
-                    # 线性拟合
                     slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
                     
-                    # 计算活化能
                     Ea = -slope * R
                     Ea_kJ = Ea / 1000
                     
-                    # 绘制拟合图
                     fig, ax = plt.subplots(figsize=(5.5, 4.5))
                     
                     x_fit = np.linspace(min(x_data), max(x_data), 100)
                     y_fit = slope * x_fit + intercept
                     
-                    ax.scatter(x_data, y_data, color=color, s=60, zorder=5, label='Experimental')
+                    ax.scatter(x_data, y_data, color=color, s=80, zorder=5, label='Experimental')
                     ax.plot(x_fit, y_fit, color=color, linestyle='--', linewidth=2, 
-                           label=f'ln(1/t) = {slope:.3f}·(1/T) + {intercept:.3f}')
+                           label=f'Linear fit')
                     
-                    ax.set_xlabel('1 / T (K⁻¹)')
+                    ax.set_xlabel('1/T (K⁻¹)')
                     ax.set_ylabel('ln(1/t)')
                     ax.set_title(f'{label}\nEa = {Ea_kJ:.2f} kJ/mol, R² = {r_value**2:.4f}')
                     ax.grid(True, alpha=0.3)
@@ -1093,21 +1285,81 @@ def page_integrated_csv_analysis():
                     plt.tight_layout()
                     st.pyplot(fig)
                     plt.close(fig)
+                    
+                    arrhenius_results[label] = {
+                        'slope': slope,
+                        'intercept': intercept,
+                        'r_squared': r_value**2,
+                        'Ea_kJ': Ea_kJ,
+                        'equation': f'ln(1/t) = {slope:.4f}·(1/T) + {intercept:.4f}'
+                    }
                 else:
                     st.warning(f"数据不足 (需要≥2个温度)")
         
-        # ===== 下载按钮 =====
+        # 显示拟合结果详情
+        if arrhenius_results:
+            with st.expander("📊 阿伦尼乌斯拟合详情"):
+                for label, result in arrhenius_results.items():
+                    st.write(f"**{label}:**")
+                    st.write(f"  方程: {result['equation']}")
+                    st.write(f"  活化能 Ea = {result['Ea_kJ']:.4f} kJ/mol")
+                    st.write(f"  R² = {result['r_squared']:.4f}")
+                    st.write("---")
+        
+        # ===== 5. 下载按钮 =====
         st.subheader("📥 下载结果")
         
-        stats_csv = io.StringIO()
-        stats_df.to_csv(stats_csv, index=False)
-        st.download_button(
-            label="📊 下载统计信息 CSV",
-            data=stats_csv.getvalue(),
-            file_name="bz_statistics.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            stats_csv = io.StringIO()
+            stats_df.to_csv(stats_csv, index=False)
+            st.download_button(
+                label="📊 下载统计信息 CSV",
+                data=stats_csv.getvalue(),
+                file_name="bz_statistics.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            # 生成峰谷详情CSV
+            detail_data = []
+            for temp in sorted(valley_time_details.keys()):
+                valley_times = valley_time_details.get(temp, [])
+                peak_times = peak_time_details.get(temp, [])
+                valley_vals = valley_value_details.get(temp, [])
+                peak_vals = peak_value_details.get(temp, [])
+                
+                # 对齐数据
+                max_len = max(len(valley_times), len(peak_times))
+                for i in range(max_len):
+                    v_t = valley_times[i] if i < len(valley_times) else None
+                    v_v = valley_vals[i] if i < len(valley_vals) else None
+                    p_t = peak_times[i] if i < len(peak_times) else None
+                    p_v = peak_vals[i] if i < len(peak_vals) else None
+                    detail_data.append({
+                        'Temperature': temp,
+                        'Valley_Index': i+1 if i < len(valley_times) else None,
+                        'Valley_Time': v_t,
+                        'Valley_Potential': v_v,
+                        'Peak_Index': i+1 if i < len(peak_times) else None,
+                        'Peak_Time': p_t,
+                        'Peak_Potential': p_v
+                    })
+            
+            detail_df = pd.DataFrame(detail_data)
+            detail_csv = io.StringIO()
+            detail_df.to_csv(detail_csv, index=False)
+            st.download_button(
+                label="📊 下载峰谷详情 CSV",
+                data=detail_csv.getvalue(),
+                file_name="bz_extrema_details.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        st.success("🎉 所有分析完成！")
 # ============================================================
 # 路由
 # ============================================================
