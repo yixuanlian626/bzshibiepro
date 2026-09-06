@@ -6,4 +6,3 @@ scipy>=1.10.0
 opencv-python-headless>=4.8.0
 ultralytics>=8.0.0
 Pillow>=10.0.0
-opencv-python>=4.5.0
