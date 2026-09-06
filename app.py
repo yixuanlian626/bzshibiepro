@@ -59,7 +59,7 @@ st.sidebar.caption("v1.0 | 支持批量数据处理")
 def format_sigfigs(value, sigfigs=4):
     """Format a number with specified number of significant figures."""
     if value == 0 or np.isnan(value) or np.isinf(value):
-        return f"{value:.4f}"
+        return "N/A"
     if abs(value) < 0.0001 or abs(value) >= 10000:
         return f"{value:.{sigfigs-1}E}"
     if value < 0:
@@ -429,15 +429,15 @@ def page_bz_analysis():
         df = pd.DataFrame(all_rows)
         st.dataframe(df, use_container_width=True)
         
-        # 统计信息 - 使用格式化温度
+        # 统计信息 - 使用四位有效数字格式
         st.subheader("📈 统计信息")
         stats_data = []
         for temp in sorted(induction_times.keys()):
             stats_data.append({
                 'Temperature (°C)': format_temp(temp),
-                'Induction Time (s)': f"{induction_times[temp]:.3f}",
-                'Valley Period (s)': f"{valley_periods.get(temp, np.nan):.4f}" if not np.isnan(valley_periods.get(temp, np.nan)) else "N/A",
-                'Peak Period (s)': f"{peak_periods.get(temp, np.nan):.4f}" if not np.isnan(peak_periods.get(temp, np.nan)) else "N/A"
+                'Induction Time (s)': format_sigfigs(induction_times[temp], 4),
+                'Valley Period (s)': format_sigfigs(valley_periods.get(temp, np.nan), 4),
+                'Peak Period (s)': format_sigfigs(peak_periods.get(temp, np.nan), 4)
             })
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
@@ -744,14 +744,14 @@ def page_integrated_csv_analysis():
                 valley_periods[temp] = valley_period
                 peak_periods[temp] = peak_period
             
-            # 显示统计信息表格 - 温度使用两位小数格式
+            # 显示统计信息表格 - 时间使用四位有效数字格式
             stats_data = []
             for temp in sorted(induction_times.keys()):
                 stats_data.append({
                     'Temperature (°C)': format_temp(temp),
-                    'Induction (s)': f"{induction_times[temp]:.3f}",
-                    'Valley Period (s)': f"{valley_periods.get(temp, np.nan):.4f}" if not np.isnan(valley_periods.get(temp, np.nan)) else "N/A",
-                    'Peak Period (s)': f"{peak_periods.get(temp, np.nan):.4f}" if not np.isnan(peak_periods.get(temp, np.nan)) else "N/A",
+                    'Induction (s)': format_sigfigs(induction_times[temp], 4),
+                    'Valley Period (s)': format_sigfigs(valley_periods.get(temp, np.nan), 4),
+                    'Peak Period (s)': format_sigfigs(peak_periods.get(temp, np.nan), 4),
                     'Valleys': len(valley_time_details.get(temp, [])),
                     'Peaks': len(peak_time_details.get(temp, []))
                 })
@@ -763,8 +763,8 @@ def page_integrated_csv_analysis():
                 for temp in sorted(valley_time_details.keys()):
                     st.write(f"**T = {format_temp(temp)} °C**")
                     st.write(f"谷值数量: {len(valley_time_details[temp])}, 峰值数量: {len(peak_time_details[temp])}")
-                    st.write(f"谷值时间 (s): {[f'{t:.1f}' for t in valley_time_details[temp]]}")
-                    st.write(f"峰值时间 (s): {[f'{t:.1f}' for t in peak_time_details[temp]]}")
+                    st.write(f"谷值时间 (s): {[format_sigfigs(t, 4) for t in valley_time_details[temp]]}")
+                    st.write(f"峰值时间 (s): {[format_sigfigs(t, 4) for t in peak_time_details[temp]]}")
                     st.write("---")
         
         # ===== 3. 绘制每个温度的电势-时间平滑曲线 =====
@@ -805,7 +805,7 @@ def page_integrated_csv_analysis():
                 
                 if valley_times:
                     ax1.axvline(x=valley_times[0], color='purple', linestyle='--', linewidth=2,
-                               label=f'First valley: {valley_times[0]:.1f}s')
+                               label=f'First valley: {format_sigfigs(valley_times[0], 4)}s')
             
             ax1.set_xlabel('Time (s)', fontsize=11)
             ax1.set_ylabel('Potential (mV)', fontsize=11)
