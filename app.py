@@ -79,6 +79,10 @@ def format_sigfigs(value, sigfigs=4):
         value = -value
     return f"{value:.{decimals}f}"
 
+def format_temp(temp):
+    """Format temperature with 4 significant figures and 2 decimal places."""
+    return f"{temp:.2f}"
+
 def find_induction_min(potential, delta):
     """Determine the induction end point: first significant local minimum."""
     n = len(potential)
@@ -262,7 +266,7 @@ def plot_time_series_single(data_dict):
                markeredgecolor='b', linewidth=1.5, label='Extracted data')
         ax.set_xlabel('Time / s')
         ax.set_ylabel('Potential / mV')
-        ax.set_title(f'T = {temp:.1f} °C')
+        ax.set_title(f'T = {format_temp(temp)} °C')
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best')
         plt.tight_layout()
@@ -425,15 +429,15 @@ def page_bz_analysis():
         df = pd.DataFrame(all_rows)
         st.dataframe(df, use_container_width=True)
         
-        # 统计信息
+        # 统计信息 - 使用格式化温度
         st.subheader("📈 统计信息")
         stats_data = []
         for temp in sorted(induction_times.keys()):
             stats_data.append({
-                'Temperature (°C)': temp,
-                'Induction Time (s)': induction_times[temp],
-                'Valley Period (s)': valley_periods.get(temp, np.nan),
-                'Peak Period (s)': peak_periods.get(temp, np.nan)
+                'Temperature (°C)': format_temp(temp),
+                'Induction Time (s)': f"{induction_times[temp]:.3f}",
+                'Valley Period (s)': f"{valley_periods.get(temp, np.nan):.4f}" if not np.isnan(valley_periods.get(temp, np.nan)) else "N/A",
+                'Peak Period (s)': f"{peak_periods.get(temp, np.nan):.4f}" if not np.isnan(peak_periods.get(temp, np.nan)) else "N/A"
             })
         stats_df = pd.DataFrame(stats_data)
         st.dataframe(stats_df, use_container_width=True)
@@ -535,7 +539,7 @@ def page_integrated_csv_analysis():
         
         # 获取所有温度
         temps = sorted(df_full['T'].unique())
-        st.info(f"📊 发现 {len(temps)} 个温度: {[f'{t:.1f}°C' for t in temps]}")
+        st.info(f"📊 发现 {len(temps)} 个温度: {[format_temp(t) + '°C' for t in temps]}")
         
         # ===== 1. 极值识别函数 =====
         def find_extrema(E, t, first_valley_idx, target_count, delta):
@@ -706,7 +710,7 @@ def page_integrated_csv_analysis():
                 valleys_idx, peaks_idx = find_extrema(pot_arr, time_arr, min_idx, target, delta)
                 
                 if valleys_idx is None or len(valleys_idx) < 2 or len(peaks_idx) < 2:
-                    st.warning(f"温度 {temp:.1f}°C: 未能识别足够的峰谷值")
+                    st.warning(f"温度 {format_temp(temp)}°C: 未能识别足够的峰谷值")
                     valley_times = [induction_time]
                     peak_times = []
                     valley_period = np.nan
@@ -740,11 +744,11 @@ def page_integrated_csv_analysis():
                 valley_periods[temp] = valley_period
                 peak_periods[temp] = peak_period
             
-            # 显示统计信息表格
+            # 显示统计信息表格 - 温度使用两位小数格式
             stats_data = []
             for temp in sorted(induction_times.keys()):
                 stats_data.append({
-                    'Temperature (°C)': f"{temp:.2f}",
+                    'Temperature (°C)': format_temp(temp),
                     'Induction (s)': f"{induction_times[temp]:.3f}",
                     'Valley Period (s)': f"{valley_periods.get(temp, np.nan):.4f}" if not np.isnan(valley_periods.get(temp, np.nan)) else "N/A",
                     'Peak Period (s)': f"{peak_periods.get(temp, np.nan):.4f}" if not np.isnan(peak_periods.get(temp, np.nan)) else "N/A",
@@ -754,10 +758,10 @@ def page_integrated_csv_analysis():
             stats_df = pd.DataFrame(stats_data)
             st.dataframe(stats_df, use_container_width=True)
             
-            # 显示峰谷时间详情
+            # 显示峰谷时间详情 - 温度使用两位小数格式
             with st.expander("📋 峰谷时间详情"):
                 for temp in sorted(valley_time_details.keys()):
-                    st.write(f"**T = {temp:.1f} °C**")
+                    st.write(f"**T = {format_temp(temp)} °C**")
                     st.write(f"谷值数量: {len(valley_time_details[temp])}, 峰值数量: {len(peak_time_details[temp])}")
                     st.write(f"谷值时间 (s): {[f'{t:.1f}' for t in valley_time_details[temp]]}")
                     st.write(f"峰值时间 (s): {[f'{t:.1f}' for t in peak_time_details[temp]]}")
@@ -781,7 +785,7 @@ def page_integrated_csv_analysis():
             
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
             
-            # 完整数据图
+            # 完整数据图 - 标题使用格式化温度
             ax1.plot(time_arr, pot_smooth, 'b-', linewidth=2, alpha=0.8, label='Smoothed')
             ax1.scatter(time_arr, pot_arr, s=15, color='blue', alpha=0.3, marker='o', label='Original')
             
@@ -805,11 +809,11 @@ def page_integrated_csv_analysis():
             
             ax1.set_xlabel('Time (s)', fontsize=11)
             ax1.set_ylabel('Potential (mV)', fontsize=11)
-            ax1.set_title(f'BZ Oscillation - T = {temp:.1f}°C (Full range)', fontsize=13, fontweight='bold')
+            ax1.set_title(f'BZ Oscillation - T = {format_temp(temp)} °C (Full range)', fontsize=13, fontweight='bold')
             ax1.legend(loc='best')
             ax1.grid(True, alpha=0.3)
             
-            # 振荡期放大图
+            # 振荡期放大图 - 标题使用格式化温度
             if temp in valley_time_details and temp in peak_time_details:
                 valley_times = valley_time_details[temp]
                 peak_times = peak_time_details[temp]
@@ -842,7 +846,7 @@ def page_integrated_csv_analysis():
                     
                     ax2.set_xlabel('Time (s)', fontsize=11)
                     ax2.set_ylabel('Potential (mV)', fontsize=11)
-                    ax2.set_title(f'Oscillation period - T = {temp:.1f}°C (Zoom)', fontsize=13, fontweight='bold')
+                    ax2.set_title(f'Oscillation period - T = {format_temp(temp)} °C (Zoom)', fontsize=13, fontweight='bold')
                     ax2.legend(loc='best')
                     ax2.grid(True, alpha=0.3)
             
@@ -891,7 +895,7 @@ def page_integrated_csv_analysis():
                     
                     ax.set_xlabel('1/T (K⁻¹)')
                     ax.set_ylabel('ln(1/t)')
-                    ax.set_title(f'{label}\nEa = {Ea_kJ:.2f} kJ/mol, R² = {r_value**2:.4f}')
+                    ax.set_title(f'{label}\nEa = {format_sigfigs(Ea_kJ, 4)} kJ/mol, R² = {format_sigfigs(r_value**2, 4)}')
                     ax.grid(True, alpha=0.3)
                     ax.legend(loc='best', fontsize=8)
                     plt.tight_layout()
@@ -903,7 +907,7 @@ def page_integrated_csv_analysis():
                         'intercept': intercept,
                         'r_squared': r_value**2,
                         'Ea_kJ': Ea_kJ,
-                        'equation': f'ln(1/t) = {slope:.4f}·(1/T) + {intercept:.4f}'
+                        'equation': f'ln(1/t) = {format_sigfigs(slope, 4)}·(1/T) + {format_sigfigs(intercept, 4)}'
                     }
                 else:
                     st.warning(f"数据不足 (需要≥2个温度)")
@@ -914,8 +918,8 @@ def page_integrated_csv_analysis():
                 for label, result in arrhenius_results.items():
                     st.write(f"**{label}:**")
                     st.write(f"  方程: {result['equation']}")
-                    st.write(f"  活化能 Ea = {result['Ea_kJ']:.4f} kJ/mol")
-                    st.write(f"  R² = {result['r_squared']:.4f}")
+                    st.write(f"  活化能 Ea = {format_sigfigs(result['Ea_kJ'], 4)} kJ/mol")
+                    st.write(f"  R² = {format_sigfigs(result['r_squared'], 4)}")
                     st.write("---")
         
         # ===== 5. 下载按钮 =====
@@ -951,7 +955,7 @@ def page_integrated_csv_analysis():
                     p_t = peak_times[i] if i < len(peak_times) else None
                     p_v = peak_vals[i] if i < len(peak_vals) else None
                     detail_data.append({
-                        'Temperature': temp,
+                        'Temperature': format_temp(temp),
                         'Valley_Index': i+1 if i < len(valley_times) else None,
                         'Valley_Time': v_t,
                         'Valley_Potential': v_v,
