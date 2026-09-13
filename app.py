@@ -83,8 +83,15 @@ def format_temp(temp):
     """Format temperature with 4 significant figures and 2 decimal places."""
     return f"{temp:.2f}"
 
-def find_induction_min(potential, delta):
-    """Determine the induction end point: first significant local minimum."""
+def find_induction_min(potential, delta, sustain=4):
+    """Determine the induction end point: first significant local minimum.
+
+    Robust to isolated spurious points (OCR misreads or transient meter
+    deviations): a candidate rise of >= delta only ends the induction if the
+    potential stays above the current running minimum for `sustain` further
+    samples. If it falls back below the minimum within that window, the rise is
+    treated as a one-off glitch and scanning continues from the deeper point.
+    """
     n = len(potential)
     min_val = potential[0]
     min_idx = 0
@@ -103,7 +110,19 @@ def find_induction_min(potential, delta):
                 peak = potential[j + 1]
                 j += 1
             if peak - min_val >= delta:
-                break
+                # 持续确认：peak 之后 sustain 个采样点内若回落到谷值之下，视为毛刺
+                end_check = min(j + 1 + sustain, n)
+                k = j + 1
+                while k < end_check and potential[k] >= min_val:
+                    k += 1
+                if k >= end_check:
+                    break  # 上升被确认，诱导期在此结束
+                else:
+                    # 毛刺回落后，以更低的点作为新谷值继续扫描
+                    i = k
+                    min_val = potential[k]
+                    min_idx = k
+                    continue
             else:
                 i = j
                 min_val = potential[i]
@@ -186,7 +205,7 @@ def parse_temperature_from_file(filename):
         return float(m.group())
     return None
 
-def extract_bz_from_dataframe(df, temp, pot_low, pot_high, n_valley, n_peak, delta):
+def extract_bz_from_dataframe(df, temp, pot_low, pot_high, n_valley, n_peak, delta, sustain=4):
     """Extract B-Z data from a DataFrame with time and potential columns."""
     # 获取时间和电势列
     time_raw = df.iloc[:, 0].values.astype(float)
@@ -199,7 +218,7 @@ def extract_bz_from_dataframe(df, temp, pot_low, pot_high, n_valley, n_peak, del
     if len(time) == 0:
         return None, [], [], None, [], []
 
-    min_idx, min_val = find_induction_min(potential, delta)
+    min_idx, min_val = find_induction_min(potential, delta, sustain)
     min_time = time[min_idx]
     induction_time = min_time
 
@@ -362,6 +381,7 @@ def page_bz_analysis():
         N_VALLEY = st.number_input("谷值数量", value=6, min_value=2, max_value=20)
         N_PEAK = st.number_input("峰值数量", value=6, min_value=2, max_value=20)
         DELTA = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
+        SUSTAIN = st.number_input("诱导期确认窗口 (采样点)", value=4, min_value=1, max_value=20, step=1, help="判定诱导期结束前需连续保持上升的采样点数量，用于剔除抽帧误识别/表计瞬时偏离造成的孤立毛刺")
     
     uploaded_files = st.file_uploader(
         "上传CSV文件 (支持多选)",
@@ -398,7 +418,8 @@ def page_bz_analysis():
             result = extract_bz_from_dataframe(
                 df, temp,
                 POTENTIAL_LOW, POTENTIAL_HIGH,
-                N_VALLEY, N_PEAK, DELTA
+                N_VALLEY, N_PEAK, DELTA,
+                SUSTAIN
             )
             
             if result[0] is None:
@@ -513,6 +534,7 @@ def page_integrated_csv_analysis():
         delta_value = st.number_input("波动阈值 (mV)", value=2.0, min_value=0.1, max_value=10.0, step=0.1)
         R = 8.314  # 气体常数
         target_count = st.number_input("峰谷值数量", value=6, min_value=2, max_value=10, step=1)
+        sustain_value = st.number_input("诱导期确认窗口 (采样点)", value=4, min_value=1, max_value=20, step=1, help="剔除抽帧误识别/表计瞬时偏离造成的孤立毛刺")
     
     uploaded_file = st.file_uploader(
         "上传整合CSV文件",
@@ -702,7 +724,7 @@ def page_integrated_csv_analysis():
                 pot_arr = df_temp['E'].values
                 
                 # 找诱导期结束点（第一个谷值）
-                min_idx, min_val = find_induction_min(pot_arr, delta)
+                min_idx, min_val = find_induction_min(pot_arr, delta, sustain_value)
                 induction_time = time_arr[min_idx]
                 induction_times[temp] = induction_time
                 
