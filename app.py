@@ -3,12 +3,7 @@ import os
 import sys
 import subprocess
 
-# ========== 处理 OpenCV 导入 ==========
-try:
-    import cv2
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
-    import cv2
+import cv2
 
 # 导入其他库
 try:
